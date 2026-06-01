@@ -34,7 +34,10 @@ DEFAULT_CONFIG = {
     "max_dimming_percent": 10,  # Maximale Dämpfung der gesunden Pixel
     "compensation_enabled": True,
     "grid_cols": 32,
-    "grid_rows": 18
+    "grid_rows": 18,
+    "idle_dimming_enabled": True,
+    "idle_timeout_seconds": 60,
+    "idle_dim_percent": 60
 }
 
 # Single-Instance Port
@@ -202,10 +205,16 @@ class OverlayManager:
         self.model = model
         self.overlay_win = None
         self.display = None
+        self.is_idle = False
+        
+        # Starte die regelmäßige Inaktivitätsprüfung
+        self.root.after(1000, self._poll_idle)
 
     def update_overlay(self):
         if not self.model.config["compensation_enabled"]:
             self.hide_overlay()
+            return
+        if self.is_idle:
             return
 
         self.root.after(0, self._sync_overlay)
@@ -313,6 +322,68 @@ class OverlayManager:
                 pass
             self.overlay_win = None
 
+    def _poll_idle(self):
+        try:
+            if not self.display:
+                self.display = display.Display()
+                
+            config_enabled = self.model.config.get("idle_dimming_enabled", True)
+            if config_enabled and self.display.has_extension('MIT-SCREEN-SAVER'):
+                info = self.display.screen().root.screensaver_query_info()
+                idle_sec = info.idle / 1000.0
+                timeout = self.model.config.get("idle_timeout_seconds", 60)
+                
+                if idle_sec >= timeout:
+                    if not self.is_idle:
+                        self.is_idle = True
+                        print("System im Leerlauf. Aktiviere Inaktivitäts-Dimmer.")
+                    self._apply_idle_dimming()
+                else:
+                    if self.is_idle:
+                        self.is_idle = False
+                        print("Aktivität erkannt. Deaktiviere Inaktivitäts-Dimmer.")
+                        self.update_overlay()
+            else:
+                if self.is_idle:
+                    self.is_idle = False
+                    self.update_overlay()
+        except Exception as e:
+            print(f"Fehler bei Inaktivitätsprüfung: {e}")
+            
+        self.root.after(1000, self._poll_idle)
+
+    def _apply_idle_dimming(self):
+        try:
+            width = self.display.screen().width_in_pixels
+            height = self.display.screen().height_in_pixels
+            
+            if not self.overlay_win:
+                self.overlay_win = tk.Toplevel(self.root)
+                self.overlay_win.overrideredirect(True)
+                self.overlay_win.geometry(f"{width}x{height}+0+0")
+                self.overlay_win.attributes("-topmost", True)
+                self.overlay_win.config(bg="black")
+                
+                self.overlay_win.update()
+                window_id = int(self.overlay_win.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                self.display.flush()
+
+            # Setze Bounding Shape auf den vollen Bildschirm (gesamtes Fenster dimmen)
+            self.overlay_win.update()
+            window_id = int(self.overlay_win.wm_frame(), 16)
+            xwin = self.display.create_resource_object('window', window_id)
+            shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+            self.display.flush()
+
+            # Helligkeit dämpfen
+            idle_dim = self.model.config.get("idle_dim_percent", 60) / 100.0
+            self.overlay_win.attributes("-alpha", idle_dim)
+            
+        except Exception as e:
+            print(f"Fehler beim Anwenden des Inaktivitäts-Dimmers: {e}")
+
 
 class ControlGUI:
     """Edles Premium Dark Mode Kontrollzentrum."""
@@ -364,6 +435,8 @@ class ControlGUI:
         self.style.configure("StatVal.TLabel", background=self.bg_card, foreground=self.text_light, font=("Outfit", 24, "bold"))
         self.style.configure("StatLbl.TLabel", background=self.bg_card, foreground=self.text_dim, font=("Inter", 9))
         self.style.configure("CardText.TLabel", background=self.bg_card, foreground=self.text_light)
+        self.style.configure("TCheckbutton", background=self.bg_card, foreground=self.text_light, font=("Inter", 10))
+        self.style.map("TCheckbutton", background=[("active", self.bg_card)], foreground=[("active", self.accent_cyan)])
 
     def create_layout(self):
         # Top Header
@@ -467,36 +540,72 @@ class ControlGUI:
         
         card = ttk.Frame(parent, style="Card.TFrame")
         card.grid(row=0, column=0, pady=10, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.columnconfigure(1, weight=1)
         
-        ttk.Label(card, text="Dienst-Einstellungen", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=(20, 15))
+        # Header
+        ttk.Label(card, text="Dienst-Einstellungen", style="SubHeader.TLabel").grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="w")
+
+        # Linke Spalte (Kern-Einstellungen)
+        left_col = ttk.Frame(card, style="Card.TFrame")
+        left_col.grid(row=1, column=0, padx=(20, 10), pady=10, sticky="nsew")
+        
+        ttk.Label(left_col, text="Kern-Einstellungen", font=("Outfit", 12, "bold"), background=self.bg_card, foreground=self.accent_cyan).pack(anchor="w", pady=(0, 10))
 
         # Slider 1: Sampling-Intervall
-        ttk.Label(card, text="Abtastungs-Intervall (Sekunden):", style="CardText.TLabel").pack(anchor="w", padx=20, pady=(10, 2))
+        ttk.Label(left_col, text="Abtastungs-Intervall (Sekunden):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
         self.val_interval = tk.IntVar(value=self.model.config["tracking_interval_seconds"])
-        self.lbl_interval_num = ttk.Label(card, text=f"{self.val_interval.get()}s", style="CardText.TLabel", foreground=self.accent_cyan)
-        self.lbl_interval_num.pack(anchor="w", padx=20)
-        self.slider_interval = ttk.Scale(card, from_=5, to=300, variable=self.val_interval, orient="horizontal", command=lambda e: self.lbl_interval_num.config(text=f"{self.val_interval.get()}s"))
-        self.slider_interval.pack(fill="x", padx=20, pady=(0, 15))
+        self.lbl_interval_num = ttk.Label(left_col, text=f"{self.val_interval.get()}s", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_interval_num.pack(anchor="w")
+        self.slider_interval = ttk.Scale(left_col, from_=5, to=300, variable=self.val_interval, orient="horizontal", command=lambda e: self.lbl_interval_num.config(text=f"{self.val_interval.get()}s"))
+        self.slider_interval.pack(fill="x", pady=(0, 15))
 
-        # Slider 2: Simulations-Geschwindigkeit (Alterungsfaktor)
-        ttk.Label(card, text="Alterungs-Geschwindigkeit (Simulationstest):", style="CardText.TLabel").pack(anchor="w", padx=20, pady=(10, 2))
+        # Slider 2: Simulations-Geschwindigkeit
+        ttk.Label(left_col, text="Alterungs-Geschwindigkeit (Simulationstest):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
         self.val_speed = tk.DoubleVar(value=self.model.config["aging_speed"])
-        self.lbl_speed_num = ttk.Label(card, text=f"{self.val_speed.get():.6f} (Echtzeit ≈ 0.000100)", style="CardText.TLabel", foreground=self.accent_cyan)
-        self.lbl_speed_num.pack(anchor="w", padx=20)
-        self.slider_speed = ttk.Scale(card, from_=0.0001, to=10.0, variable=self.val_speed, orient="horizontal", command=lambda e: self.lbl_speed_num.config(text=f"{self.val_speed.get():.6f} (Simulation)" if self.val_speed.get() > 0.005 else f"{self.val_speed.get():.6f} (Echtzeit)"))
-        self.slider_speed.pack(fill="x", padx=20, pady=(0, 15))
+        self.lbl_speed_num = ttk.Label(left_col, text=f"{self.val_speed.get():.6f} (Echtzeit ≈ 0.000100)", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_speed_num.pack(anchor="w")
+        self.slider_speed = ttk.Scale(left_col, from_=0.0001, to=10.0, variable=self.val_speed, orient="horizontal", command=lambda e: self.lbl_speed_num.config(text=f"{self.val_speed.get():.6f} (Simulation)" if self.val_speed.get() > 0.005 else f"{self.val_speed.get():.6f} (Echtzeit)"))
+        self.slider_speed.pack(fill="x", pady=(0, 15))
 
         # Slider 3: Maximale Helligkeitsdämpfung
-        ttk.Label(card, text="Maximale Helligkeitsdämpfung (%):", style="CardText.TLabel").pack(anchor="w", padx=20, pady=(10, 2))
+        ttk.Label(left_col, text="Maximale Helligkeitsdämpfung (%):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
         self.val_max_dim = tk.IntVar(value=self.model.config["max_dimming_percent"])
-        self.lbl_max_dim_num = ttk.Label(card, text=f"{self.val_max_dim.get()}%", style="CardText.TLabel", foreground=self.accent_cyan)
-        self.lbl_max_dim_num.pack(anchor="w", padx=20)
-        self.slider_max_dim = ttk.Scale(card, from_=1, to=30, variable=self.val_max_dim, orient="horizontal", command=lambda e: self.lbl_max_dim_num.config(text=f"{self.val_max_dim.get()}%"))
-        self.slider_max_dim.pack(fill="x", padx=20, pady=(0, 15))
+        self.lbl_max_dim_num = ttk.Label(left_col, text=f"{self.val_max_dim.get()}%", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_max_dim_num.pack(anchor="w")
+        self.slider_max_dim = ttk.Scale(left_col, from_=1, to=30, variable=self.val_max_dim, orient="horizontal", command=lambda e: self.lbl_max_dim_num.config(text=f"{self.val_max_dim.get()}%"))
+        self.slider_max_dim.pack(fill="x", pady=(0, 15))
 
-        # Save Button
+        # Rechte Spalte (Inaktivitäts-Dimmer)
+        right_col = ttk.Frame(card, style="Card.TFrame")
+        right_col.grid(row=1, column=1, padx=(10, 20), pady=10, sticky="nsew")
+
+        ttk.Label(right_col, text="Inaktivitäts-Dimmer (Bildschirmschoner)", font=("Outfit", 12, "bold"), background=self.bg_card, foreground=self.accent_cyan).pack(anchor="w", pady=(0, 10))
+
+        # Checkbox: Aktivieren
+        self.val_idle_enabled = tk.BooleanVar(value=self.model.config.get("idle_dimming_enabled", True))
+        self.chk_idle = ttk.Checkbutton(right_col, text="Dimmer aktivieren", variable=self.val_idle_enabled, style="TCheckbutton")
+        self.chk_idle.pack(anchor="w", pady=(5, 15))
+
+        # Slider 4: Inaktivitäts-Timeout
+        ttk.Label(right_col, text="Verzögerung bis Dimmung (Sekunden):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
+        self.val_idle_timeout = tk.IntVar(value=self.model.config.get("idle_timeout_seconds", 60))
+        self.lbl_idle_timeout_num = ttk.Label(right_col, text=f"{self.val_idle_timeout.get()}s", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_idle_timeout_num.pack(anchor="w")
+        self.slider_idle_timeout = ttk.Scale(right_col, from_=10, to=600, variable=self.val_idle_timeout, orient="horizontal", command=lambda e: self.lbl_idle_timeout_num.config(text=f"{self.val_idle_timeout.get()}s"))
+        self.slider_idle_timeout.pack(fill="x", pady=(0, 15))
+
+        # Slider 5: Inaktivitäts-Dimmstärke
+        ttk.Label(right_col, text="Dimm-Stärke (% Abdunkelung):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
+        self.val_idle_dim = tk.IntVar(value=self.model.config.get("idle_dim_percent", 60))
+        self.lbl_idle_dim_num = ttk.Label(right_col, text=f"{self.val_idle_dim.get()}%", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_idle_dim_num.pack(anchor="w")
+        self.slider_idle_dim = ttk.Scale(right_col, from_=10, to=90, variable=self.val_idle_dim, orient="horizontal", command=lambda e: self.lbl_idle_dim_num.config(text=f"{self.val_idle_dim.get()}%"))
+        self.slider_idle_dim.pack(fill="x", pady=(0, 15))
+
+        # Speichern Button (unten zentriert)
         self.btn_save = ttk.Button(card, text="Einstellungen Speichern", command=self.save_settings, style="Accent.TButton")
-        self.btn_save.pack(anchor="w", padx=20, pady=20)
+        self.btn_save.grid(row=2, column=0, columnspan=2, padx=20, pady=20, sticky="w")
 
     def build_tools(self, parent):
         parent.rowconfigure(0, weight=1)
@@ -537,6 +646,9 @@ class ControlGUI:
         self.model.config["tracking_interval_seconds"] = self.val_interval.get()
         self.model.config["aging_speed"] = self.val_speed.get()
         self.model.config["max_dimming_percent"] = self.val_max_dim.get()
+        self.model.config["idle_dimming_enabled"] = self.val_idle_enabled.get()
+        self.model.config["idle_timeout_seconds"] = self.val_idle_timeout.get()
+        self.model.config["idle_dim_percent"] = self.val_idle_dim.get()
         self.model.save_config()
         messagebox.showinfo("Erfolg", "Einstellungen wurden erfolgreich gespeichert!")
 
