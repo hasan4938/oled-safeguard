@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=OLED Safe-Guard
+Comment=Dynamic OLED Aging Compensation Utility
+Exec=python3 oled_safeguard.py --daemon
+Icon=display
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
