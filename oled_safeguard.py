@@ -37,7 +37,9 @@ DEFAULT_CONFIG = {
     "grid_rows": 18,
     "idle_dimming_enabled": True,
     "idle_timeout_seconds": 60,
-    "idle_dim_percent": 60
+    "idle_dim_percent": 60,
+    "operating_mode": "Schutz",
+    "night_dim_percent": 30
 }
 
 # Single-Instance Port
@@ -216,6 +218,9 @@ class OverlayManager:
             return
         if self.is_idle:
             return
+        if self.model.config.get("operating_mode", "Schutz") == "Gaming":
+            self.hide_overlay()
+            return
 
         self.root.after(0, self._sync_overlay)
 
@@ -229,6 +234,32 @@ class OverlayManager:
             
             rows = self.model.config["grid_rows"]
             cols = self.model.config["grid_cols"]
+            
+            mode = self.model.config.get("operating_mode", "Schutz")
+            
+            if mode == "Nacht":
+                if not self.overlay_win:
+                    self.overlay_win = tk.Toplevel(self.root)
+                    self.overlay_win.overrideredirect(True)
+                    self.overlay_win.geometry(f"{width}x{height}+0+0")
+                    self.overlay_win.attributes("-topmost", True)
+                    self.overlay_win.config(bg="black")
+                    
+                    self.overlay_win.update()
+                    window_id = int(self.overlay_win.wm_frame(), 16)
+                    xwin = self.display.create_resource_object('window', window_id)
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                    self.display.flush()
+
+                self.overlay_win.update()
+                window_id = int(self.overlay_win.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+                self.display.flush()
+
+                night_dim = self.model.config.get("night_dim_percent", 30) / 100.0
+                self.overlay_win.attributes("-alpha", night_dim)
+                return
             
             # Berechne Dämpfungswerte für jeden Block
             with self.model.lock:
@@ -510,6 +541,30 @@ class ControlGUI:
         )
         ttk.Label(card3, text=desc_text, style="CardText.TLabel", justify="left").pack(anchor="w", padx=20, pady=(0, 20))
         
+        # Mode selector Frame (Segmented-Style buttons)
+        mode_frame = ttk.Frame(card3, style="Card.TFrame")
+        mode_frame.pack(fill="x", padx=20, pady=(0, 20))
+        
+        ttk.Label(mode_frame, text="Betriebsmodus:", style="CardText.TLabel", font=("Outfit", 10, "bold")).pack(side="left", padx=(0, 15))
+        
+        self.mode_buttons = {}
+        modes = [
+            ("Schutz", "🛡️ Schutz-Modus"),
+            ("Gaming", "🎮 Gaming (HDR)"),
+            ("Nacht", "🌙 Nacht-Filter")
+        ]
+        
+        for mode_key, mode_label in modes:
+            btn = ttk.Button(
+                mode_frame, 
+                text=mode_label, 
+                command=lambda m=mode_key: self.change_operating_mode(m)
+            )
+            btn.pack(side="left", padx=(0, 10))
+            self.mode_buttons[mode_key] = btn
+            
+        self.update_mode_button_styles()
+        
         # Buttons Frame
         btn_frame = ttk.Frame(card3, style="Card.TFrame")
         btn_frame.pack(fill="x", padx=20, pady=(0, 20))
@@ -641,6 +696,20 @@ class ControlGUI:
         else:
             self.btn_toggle.config(text="Kompensation Aktivieren", style="TButton")
             self.overlay_manager.hide_overlay()
+
+    def change_operating_mode(self, mode):
+        self.model.config["operating_mode"] = mode
+        self.model.save_config()
+        self.update_mode_button_styles()
+        self.overlay_manager.update_overlay()
+
+    def update_mode_button_styles(self):
+        active_mode = self.model.config.get("operating_mode", "Schutz")
+        for mode_key, btn in self.mode_buttons.items():
+            if mode_key == active_mode:
+                btn.config(style="Accent.TButton")
+            else:
+                btn.config(style="TButton")
 
     def save_settings(self):
         self.model.config["tracking_interval_seconds"] = self.val_interval.get()
