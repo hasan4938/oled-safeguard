@@ -14,6 +14,8 @@ import socket
 import threading
 import io
 import datetime
+import random
+import math
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -41,7 +43,14 @@ DEFAULT_CONFIG = {
     "idle_dim_percent": 60,
     "operating_mode": "Schutz",
     "night_dim_percent": 30,
-    "night_schedule_enabled": False
+    "night_schedule_enabled": False,
+    "dithering_percent": 1,     # Dithering-Rauschen zur Verringerung von Color Banding (0-5%)
+    "aging_speed_red": 0.0001,
+    "aging_speed_green": 0.0001,
+    "aging_speed_blue": 0.00015, # Höhere Alterungsrate für blaue OLEDs
+    "idle_mode": "Dimmen",      # "Dimmen" oder "Heilung"
+    "bypass_apps": "vlc,steam,mpv",
+    "bypass_fullscreen": True
 }
 
 # Single-Instance Port
@@ -88,6 +97,16 @@ class OLEDModel:
                 # Validierung der Dimensionen
                 if len(self.wear_map) != rows or any(len(row) != cols for row in self.wear_map):
                     raise ValueError("Ungültige Dimensionen")
+                
+                # Upgrade von 2D (Grayscale) auf 3D (Sub-Pixel RGB)
+                if self.wear_map and not isinstance(self.wear_map[0][0], list):
+                    print("Konvertiere alte 2D-Abnutzungskarte in 3D (Sub-Pixel RGB)...")
+                    self.wear_map = [[[val, val, val] for val in row] for row in self.wear_map]
+                    self.save_wear_map()
+                elif self.wear_map and isinstance(self.wear_map[0][0], list) and len(self.wear_map[0][0]) != 3:
+                    # Sicherstellen, dass jeder Block exakt 3 Werte hat
+                    self.wear_map = [[[val[0] if len(val) > 0 else 0.0, val[1] if len(val) > 1 else 0.0, val[2] if len(val) > 2 else 0.0] if isinstance(val, list) else [val, val, val] for val in row] for row in self.wear_map]
+                    self.save_wear_map()
             else:
                 self.reset_wear_map()
         except Exception as e:
@@ -106,7 +125,7 @@ class OLEDModel:
         with self.lock:
             rows = self.config["grid_rows"]
             cols = self.config["grid_cols"]
-            self.wear_map = [[0.0 for _ in range(cols)] for _ in range(rows)]
+            self.wear_map = [[[0.0, 0.0, 0.0] for _ in range(cols)] for _ in range(rows)]
         self.save_wear_map()
 
     def check_night_schedule(self, current_hour):
@@ -162,7 +181,8 @@ class OLEDDaemon:
             self._sample_screen()
             
             # Aktualisiere das Overlay, falls aktiv
-            if self.model.config["compensation_enabled"]:
+            bypass_active = self._check_bypass_active()
+            if self.model.config["compensation_enabled"] and not bypass_active:
                 self.overlay_manager.update_overlay()
             else:
                 self.overlay_manager.hide_overlay()
@@ -195,28 +215,76 @@ class OLEDDaemon:
             rows = self.model.config["grid_rows"]
             img_small = img.resize((cols, rows), Image.Resampling.BILINEAR)
             
-            # Grayscale Luminanz berechnen und akkumulieren
+            # Sub-Pixel RGB Luminanz berechnen und akkumulieren
             pixels = img_small.load()
             delta_hours = self.model.config["tracking_interval_seconds"] / 3600.0
-            aging_speed = self.model.config["aging_speed"]
+            
+            # Unabhängige Alterungsgeschwindigkeiten laden
+            k_red = self.model.config.get("aging_speed_red", 0.0001)
+            k_green = self.model.config.get("aging_speed_green", 0.0001)
+            k_blue = self.model.config.get("aging_speed_blue", 0.00015)
             
             with self.model.lock:
                 for y in range(rows):
                     for x in range(cols):
                         r, g, b = pixels[x, y]
-                        # Relative Helligkeit (Y) nach ITU-R BT.601
-                        y_val = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-                        # Stress = Helligkeit * Zeit * Alterungsfaktor
-                        stress = y_val * delta_hours * aging_speed
-                        self.model.wear_map[y][x] += stress
-                        # Obergrenze für Abnutzung (max 50% physikalischer Helligkeitsverlust)
-                        if self.model.wear_map[y][x] > 0.5:
-                            self.model.wear_map[y][x] = 0.5
+                        
+                        # Stress für jeden einzelnen Subpixel berechnen
+                        stress_r = (r / 255.0) * delta_hours * k_red
+                        stress_g = (g / 255.0) * delta_hours * k_green
+                        stress_b = (b / 255.0) * delta_hours * k_blue
+                        
+                        # Addieren
+                        self.model.wear_map[y][x][0] += stress_r
+                        self.model.wear_map[y][x][1] += stress_g
+                        self.model.wear_map[y][x][2] += stress_b
+                        
+                        # Obergrenze bei 50% physikalischem Verlust
+                        for i in range(3):
+                            if self.model.wear_map[y][x][i] > 0.5:
+                                self.model.wear_map[y][x][i] = 0.5
 
             self.model.save_wear_map()
             
         except Exception as e:
             print(f"Fehler beim Bildschirm-Sampling: {e}")
+
+    def _check_bypass_active(self):
+        try:
+            if not self.display:
+                return False
+            
+            bypass_fs = self.model.config.get("bypass_fullscreen", True)
+            bypass_apps_str = self.model.config.get("bypass_apps", "vlc,steam,mpv")
+            bypass_apps = [a.strip().lower() for a in bypass_apps_str.split(",") if a.strip()]
+            
+            if not bypass_fs and not bypass_apps:
+                return False
+                
+            active_window_atom = self.display.intern_atom('_NET_ACTIVE_WINDOW')
+            response = self.root.get_full_property(active_window_atom, X.AnyPropertyType)
+            if response and response.value:
+                win_id = response.value[0]
+                if win_id != 0:
+                    win = self.display.create_resource_object('window', win_id)
+                    
+                    if bypass_fs:
+                        state_atom = self.display.intern_atom('_NET_WM_STATE')
+                        fullscreen_atom = self.display.intern_atom('_NET_WM_STATE_FULLSCREEN')
+                        state_prop = win.get_full_property(state_atom, X.AnyPropertyType)
+                        if state_prop and state_prop.value:
+                            if fullscreen_atom in state_prop.value:
+                                return True
+                                
+                    if bypass_apps:
+                        wm_class = win.get_wm_class()
+                        if wm_class:
+                            for name in wm_class:
+                                if name.lower() in bypass_apps:
+                                    return True
+        except Exception:
+            pass
+        return False
 
 
 class OverlayManager:
@@ -227,6 +295,7 @@ class OverlayManager:
         self.overlay_win = None
         self.display = None
         self.is_idle = False
+        self.healing_saver = None
         
         # Starte die regelmäßige Inaktivitätsprüfung
         self.root.after(1000, self._poll_idle)
@@ -282,8 +351,8 @@ class OverlayManager:
             
             # Berechne Dämpfungswerte für jeden Block
             with self.model.lock:
-                # Physikalisches L_max: 1.0 - Abnutzung
-                l_max = [[1.0 - self.model.wear_map[y][x] for x in range(cols)] for y in range(rows)]
+                # Physikalisches L_max: 1.0 - Abnutzung (Maximum der Kanäle für sichere Helligkeitskompensation)
+                l_max = [[1.0 - max(self.model.wear_map[y][x]) for x in range(cols)] for y in range(rows)]
             
             # Finde die dunkelste Stelle des Bildschirms
             min_l_max = min(min(row) for row in l_max)
@@ -333,21 +402,19 @@ class OverlayManager:
             # Setze die Gesamt-Fenster-Opacity auf das Maximum der benötigten Dämpfung
             self.overlay_win.attributes("-alpha", max_dim)
 
-            # Maskierung der abgenutzten Zonen via X11 Bounding Shape
+            # Maskierung der abgenutzten Zonen via X11 Bounding Shape mit räumlichem Dithering
             # Wir dämpfen nur dort, wo der Helligkeitsverlust noch gering ist.
-            # Stark abgenutzte Zonen werden aus dem Overlay "herausgeschnitten", damit dort
-            # das Originallicht mit voller Helligkeit durchscheint!
             rects = []
             block_w = width // cols
             block_h = height // rows
             
+            dithering = self.model.config.get("dithering_percent", 1) / 100.0
+            
             for y in range(rows):
                 for x in range(cols):
-                    # Wenn die benötigte Dämpfung nahe dem Maximum liegt, ist das Pixel gesund
-                    # -> Dämpfungsfenster muss hier existieren
-                    # Wenn die benötigte Dämpfung klein ist, ist das Pixel abgenutzt
-                    # -> Dämpfungsfenster wird hier weggeschnitten (>50% Abnutzungsschwelle relativ)
-                    if max_dim > 0 and dim_map[y][x] > 0.3 * max_dim:
+                    # Räumliches Dithering-Rauschen zur Vermeidung von Color Banding
+                    noise = random.uniform(-dithering, dithering) if dithering > 0 else 0
+                    if max_dim > 0 and (dim_map[y][x] + noise) > 0.3 * max_dim:
                         rx = x * block_w
                         ry = y * block_h
                         rects.append((rx, ry, block_w, block_h))
@@ -367,6 +434,11 @@ class OverlayManager:
             print(f"Fehler im OverlayManager beim Zeichnen: {e}")
 
     def hide_overlay(self):
+        if self.healing_saver:
+            try:
+                self.healing_saver.hide()
+            except Exception:
+                pass
         if self.overlay_win:
             try:
                 self.overlay_win.destroy()
@@ -388,16 +460,30 @@ class OverlayManager:
                 if idle_sec >= timeout:
                     if not self.is_idle:
                         self.is_idle = True
-                        print("System im Leerlauf. Aktiviere Inaktivitäts-Dimmer.")
-                    self._apply_idle_dimming()
+                        print("System im Leerlauf. Aktiviere Inaktivitäts-Schoner.")
+                    
+                    idle_mode = self.model.config.get("idle_mode", "Dimmen")
+                    if idle_mode == "Heilung":
+                        self.hide_overlay()
+                        if not self.healing_saver:
+                            self.healing_saver = ActiveHealingSaver(self.root, self.model, self.display)
+                        self.healing_saver.show()
+                    else:
+                        if self.healing_saver:
+                            self.healing_saver.hide()
+                        self._apply_idle_dimming()
                 else:
                     if self.is_idle:
                         self.is_idle = False
-                        print("Aktivität erkannt. Deaktiviere Inaktivitäts-Dimmer.")
+                        print("Aktivität erkannt. Deaktiviere Inaktivitäts-Schoner.")
+                        if self.healing_saver:
+                            self.healing_saver.hide()
                         self.update_overlay()
             else:
                 if self.is_idle:
                     self.is_idle = False
+                    if self.healing_saver:
+                        self.healing_saver.hide()
                     self.update_overlay()
         except Exception as e:
             print(f"Fehler bei Inaktivitätsprüfung: {e}")
@@ -435,6 +521,134 @@ class OverlayManager:
             
         except Exception as e:
             print(f"Fehler beim Anwenden des Inaktivitäts-Dimmers: {e}")
+
+
+class ActiveHealingSaver:
+    """Visueller, animierter Bildschirmschoner zur aktiven Ausgleichs-Alterung (Panel Healing)."""
+    def __init__(self, root, model, display_obj):
+        self.root = root
+        self.model = model
+        self.display = display_obj
+        self.window = None
+        self.canvas = None
+        self.running = False
+        self.time_val = 0.0
+
+    def show(self):
+        if self.window:
+            return
+            
+        width = self.display.screen().width_in_pixels
+        height = self.display.screen().height_in_pixels
+        
+        self.window = tk.Toplevel(self.root)
+        self.window.overrideredirect(True)
+        self.window.geometry(f"{width}x{height}+0+0")
+        self.window.attributes("-topmost", True)
+        self.window.config(bg="black")
+        
+        # Input/Bounding Shape für Click-Through
+        self.window.update()
+        window_id = int(self.window.wm_frame(), 16)
+        xwin = self.display.create_resource_object('window', window_id)
+        shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+        shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+        self.display.flush()
+        
+        self.canvas = tk.Canvas(self.window, bg="black", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        
+        self.running = True
+        self.time_val = 0.0
+        self._animate()
+
+    def hide(self):
+        self.running = False
+        if self.window:
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
+            self.window = None
+            self.canvas = None
+
+    def _animate(self):
+        if not self.running or not self.window:
+            return
+            
+        try:
+            cw = self.window.winfo_width()
+            ch = self.window.winfo_height()
+            if cw <= 1 or ch <= 1:
+                self.window.after(50, self._animate)
+                return
+                
+            self.canvas.delete("all")
+            
+            cols = self.model.config["grid_cols"]
+            rows = self.model.config["grid_rows"]
+            
+            with self.model.lock:
+                wear = [[[val for val in cell] for cell in row] for row in self.model.wear_map]
+                
+            max_wear = 0.0
+            for y in range(rows):
+                for x in range(cols):
+                    for c in range(3):
+                        if wear[y][x][c] > max_wear:
+                            max_wear = wear[y][x][c]
+            
+            # Pixel-Orbiting zur Minderung von Kantenalterung
+            orbit_r = 15.0
+            self.time_val += 0.15
+            dx = int(orbit_r * math.cos(self.time_val * 0.1))
+            dy = int(orbit_r * math.sin(self.time_val * 0.1))
+            
+            block_w = cw / cols
+            block_h = ch / rows
+            
+            # Breathing Amplitude
+            global_breath = 0.75 + 0.25 * math.sin(self.time_val)
+            
+            for y in range(rows):
+                for x in range(cols):
+                    w_rgb = wear[y][x]
+                    
+                    if max_wear < 0.0001:
+                        hr, hg, hb = 0.01, 0.01, 0.01
+                    else:
+                        hr = max_wear - w_rgb[0]
+                        hg = max_wear - w_rgb[1]
+                        hb = max_wear - w_rgb[2]
+                        
+                    max_deficit = max(hr, hg, hb)
+                    # Skalierung: Maximale Dämpfung auf 50% Leistung um das Panel zu schonen
+                    scale = 0.5 * 255.0 / max_deficit if max_deficit > 0 else 0
+                    
+                    # Schimmernder Wave-Filter
+                    wave_mod = 0.8 + 0.2 * math.sin(x * 0.35 + self.time_val) * math.cos(y * 0.35 - self.time_val * 0.6)
+                    
+                    r_val = int(min(255, max(0, hr * scale * global_breath * wave_mod)))
+                    g_val = int(min(255, max(0, hg * scale * global_breath * wave_mod)))
+                    b_val = int(min(255, max(0, hb * scale * global_breath * wave_mod)))
+                    
+                    color = f"#{r_val:02x}{g_val:02x}{b_val:02x}"
+                    
+                    x1 = x * block_w + dx
+                    y1 = y * block_h + dy
+                    x2 = x1 + block_w
+                    y2 = y1 + block_h
+                    
+                    self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+                    
+            tx = cw // 2 + dx
+            ty = ch - 50 + dy
+            self.canvas.create_text(tx, ty, text="OLED SAFE-GUARD: AKTIVE COMPLEMENTÄRE BILDSCHIRM-HEILUNG (AKTIVITÄT BEENDET SCHONER)", fill="#005577", font=("Outfit", 10, "bold"))
+            
+        except Exception as e:
+            print(f"Fehler in Heilungs-Saver Animation: {e}")
+            
+        self.root.after(30, self._animate)
 
 
 class ControlGUI:
@@ -610,6 +824,28 @@ class ControlGUI:
         card.grid(row=0, column=0, pady=10, sticky="nsew")
         
         ttk.Label(card, text="Visuelle Abnutzungskarte (Heat-Map)", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=(15, 5))
+        
+        # Channel Selection Frame
+        chan_frame = ttk.Frame(card, style="Card.TFrame")
+        chan_frame.pack(fill="x", padx=20, pady=(0, 10))
+        
+        ttk.Label(chan_frame, text="Subpixel-Kanal:", style="CardText.TLabel", font=("Outfit", 9, "bold")).pack(side="left", padx=(0, 10))
+        
+        self.val_heatmap_channel = tk.StringVar(value="Gesamt")
+        self.channel_buttons = {}
+        channels = [
+            ("Gesamt", "🛡️ Gesamt"),
+            ("Rot", "🟥 Rot-Kanal"),
+            ("Grün", "🟩 Grün-Kanal"),
+            ("Blau", "🟦 Blau-Kanal")
+        ]
+        for chan_key, chan_lbl in channels:
+            btn = ttk.Button(chan_frame, text=chan_lbl, command=lambda c=chan_key: self.change_heatmap_channel(c))
+            btn.pack(side="left", padx=(0, 10))
+            self.channel_buttons[chan_key] = btn
+            
+        self.update_channel_button_styles()
+
         ttk.Label(card, text="Visuelle Darstellung der thermischen Belastung. Dunkel = Gesund | Hell/Rot/Gelb = Statische Zonen", style="StatLbl.TLabel").pack(anchor="w", padx=20, pady=(0, 15))
         
         # Heatmap Canvas
@@ -662,6 +898,17 @@ class ControlGUI:
         self.slider_max_dim = ttk.Scale(left_col, from_=1, to=30, variable=self.val_max_dim, orient="horizontal", command=lambda e: self.lbl_max_dim_num.config(text=f"{self.val_max_dim.get()}%"))
         self.slider_max_dim.pack(fill="x", pady=(0, 15))
 
+        # Automatischer X11 Bypass
+        ttk.Label(left_col, text="Automatischer X11 Bypass", font=("Outfit", 12, "bold"), background=self.bg_card, foreground=self.accent_cyan).pack(anchor="w", pady=(15, 10))
+        self.val_bypass_fs = tk.BooleanVar(value=self.model.config.get("bypass_fullscreen", True))
+        self.chk_bypass_fs = ttk.Checkbutton(left_col, text="Bypass bei Vollbild-Anwendungen", variable=self.val_bypass_fs, style="TCheckbutton")
+        self.chk_bypass_fs.pack(anchor="w", pady=(5, 5))
+        
+        ttk.Label(left_col, text="Bypass bei diesen Apps (Komma-separiert):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
+        self.entry_bypass_apps = ttk.Entry(left_col, width=30)
+        self.entry_bypass_apps.insert(0, self.model.config.get("bypass_apps", "vlc,steam,mpv"))
+        self.entry_bypass_apps.pack(anchor="w", pady=(0, 15))
+
         # Rechte Spalte (Inaktivitäts-Dimmer)
         right_col = ttk.Frame(card, style="Card.TFrame")
         right_col.grid(row=1, column=1, padx=(10, 20), pady=10, sticky="nsew")
@@ -670,8 +917,14 @@ class ControlGUI:
 
         # Checkbox: Aktivieren
         self.val_idle_enabled = tk.BooleanVar(value=self.model.config.get("idle_dimming_enabled", True))
-        self.chk_idle = ttk.Checkbutton(right_col, text="Dimmer aktivieren", variable=self.val_idle_enabled, style="TCheckbutton", command=self.on_toggle_idle_dimming)
-        self.chk_idle.pack(anchor="w", pady=(5, 15))
+        self.chk_idle = ttk.Checkbutton(right_col, text="Schoner/Dimmer aktivieren", variable=self.val_idle_enabled, style="TCheckbutton", command=self.on_toggle_idle_dimming)
+        self.chk_idle.pack(anchor="w", pady=(5, 10))
+
+        # Inaktivitäts-Modus (Dimmen vs Heilung)
+        ttk.Label(right_col, text="Inaktivitäts-Modus:", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
+        self.val_idle_mode = tk.StringVar(value=self.model.config.get("idle_mode", "Dimmen"))
+        self.combo_idle_mode = ttk.Combobox(right_col, textvariable=self.val_idle_mode, values=["Dimmen", "Heilung"], state="readonly", width=15)
+        self.combo_idle_mode.pack(anchor="w", pady=(0, 15))
 
         # Slider 4: Inaktivitäts-Timeout
         ttk.Label(right_col, text="Verzögerung bis Dimmung (Sekunden):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
@@ -694,6 +947,14 @@ class ControlGUI:
         self.val_night_schedule = tk.BooleanVar(value=self.model.config.get("night_schedule_enabled", False))
         self.chk_night_schedule = ttk.Checkbutton(right_col, text="Nacht-Filter abends automatisch aktivieren\n(von 20:00 Uhr bis 06:00 Uhr)", variable=self.val_night_schedule, style="TCheckbutton", command=self.on_toggle_night_schedule)
         self.chk_night_schedule.pack(anchor="w", pady=(5, 10))
+
+        # Slider 6: Dithering-Rauschen
+        ttk.Label(right_col, text="Dithering-Stärke (Rauschen zur Minderung von Banding):", style="CardText.TLabel").pack(anchor="w", pady=(5, 2))
+        self.val_dithering = tk.IntVar(value=self.model.config.get("dithering_percent", 1))
+        self.lbl_dithering_num = ttk.Label(right_col, text=f"{self.val_dithering.get()}%", style="CardText.TLabel", foreground=self.accent_cyan)
+        self.lbl_dithering_num.pack(anchor="w")
+        self.slider_dithering = ttk.Scale(right_col, from_=0, to=5, variable=self.val_dithering, orient="horizontal", command=lambda e: self.lbl_dithering_num.config(text=f"{self.val_dithering.get()}%"))
+        self.slider_dithering.pack(fill="x", pady=(0, 15))
 
         # Speichern Button (unten zentriert)
         self.btn_save = ttk.Button(card, text="Einstellungen Speichern", command=self.save_settings, style="Accent.TButton")
@@ -748,6 +1009,19 @@ class ControlGUI:
             else:
                 btn.config(style="TButton")
 
+    def change_heatmap_channel(self, channel):
+        self.val_heatmap_channel.set(channel)
+        self.update_channel_button_styles()
+        self.draw_heatmap()
+
+    def update_channel_button_styles(self):
+        active_chan = self.val_heatmap_channel.get()
+        for chan_key, btn in self.channel_buttons.items():
+            if chan_key == active_chan:
+                btn.config(style="Accent.TButton")
+            else:
+                btn.config(style="TButton")
+
     def on_toggle_idle_dimming(self):
         is_enabled = self.val_idle_enabled.get()
         self.model.config["idle_dimming_enabled"] = is_enabled
@@ -766,6 +1040,10 @@ class ControlGUI:
         self.model.config["idle_timeout_seconds"] = self.val_idle_timeout.get()
         self.model.config["idle_dim_percent"] = self.val_idle_dim.get()
         self.model.config["night_schedule_enabled"] = self.val_night_schedule.get()
+        self.model.config["dithering_percent"] = self.val_dithering.get()
+        self.model.config["idle_mode"] = self.val_idle_mode.get()
+        self.model.config["bypass_fullscreen"] = self.val_bypass_fs.get()
+        self.model.config["bypass_apps"] = self.entry_bypass_apps.get()
         self.model.save_config()
         messagebox.showinfo("Erfolg", "Einstellungen wurden erfolgreich gespeichert!")
 
@@ -799,28 +1077,53 @@ class ControlGUI:
         draw = ImageDraw.Draw(img)
         
         with self.model.lock:
-            wear = [row[:] for row in self.model.wear_map]
+            wear = [[[c for c in cell] for cell in row] for row in self.model.wear_map]
             
-        max_w = max(max(row) for row in wear) if wear else 0
+        channel = self.val_heatmap_channel.get()
+        channel_wear = []
+        for y in range(rows):
+            row_vals = []
+            for x in range(cols):
+                w_rgb = wear[y][x]
+                if channel == "Rot":
+                    val = w_rgb[0]
+                elif channel == "Grün":
+                    val = w_rgb[1]
+                elif channel == "Blau":
+                    val = w_rgb[2]
+                else:
+                    val = max(w_rgb)
+                row_vals.append(val)
+            channel_wear.append(row_vals)
+            
+        max_w = max(max(row) for row in channel_wear) if channel_wear else 0
         
         def get_heat_color_rgb(val):
             if max_w == 0:
                 return (0, 0, 0)
             nv = val / max_w if max_w > 0 else 0
-            if nv < 0.2:
-                return (0, 0, int((nv / 0.2) * 255))
-            elif nv < 0.4:
-                return (int(((nv - 0.2) / 0.2) * 150), 0, 255)
-            elif nv < 0.6:
-                return (255, 0, int((1.0 - (nv - 0.4) / 0.2) * 255))
-            elif nv < 0.8:
-                return (255, int(((nv - 0.6) / 0.2) * 160), 0)
+            
+            if channel == "Rot":
+                return (int(nv * 255), 0, 0)
+            elif channel == "Grün":
+                return (0, int(nv * 255), 0)
+            elif channel == "Blau":
+                return (0, 0, int(nv * 255))
             else:
-                return (255, 255, int(((nv - 0.8) / 0.2) * 255))
+                if nv < 0.2:
+                    return (0, 0, int((nv / 0.2) * 255))
+                elif nv < 0.4:
+                    return (int(((nv - 0.2) / 0.2) * 150), 0, 255)
+                elif nv < 0.6:
+                    return (255, 0, int((1.0 - (nv - 0.4) / 0.2) * 255))
+                elif nv < 0.8:
+                    return (255, int(((nv - 0.6) / 0.2) * 160), 0)
+                else:
+                    return (255, 255, int(((nv - 0.8) / 0.2) * 255))
 
         for y in range(rows):
             for x in range(cols):
-                w_val = wear[y][x]
+                w_val = channel_wear[y][x]
                 color = get_heat_color_rgb(w_val)
                 x1 = x * block_w
                 y1 = y * block_h
@@ -927,43 +1230,57 @@ Categories=Utility;
         block_h = ch / rows
         
         with self.model.lock:
-            wear = [row[:] for row in self.model.wear_map]
+            wear = [[[c for c in cell] for cell in row] for row in self.model.wear_map]
 
-        max_w = max(max(row) for row in wear) if wear else 0
+        channel = self.val_heatmap_channel.get()
+        channel_wear = []
+        for y in range(rows):
+            row_vals = []
+            for x in range(cols):
+                w_rgb = wear[y][x]
+                if channel == "Rot":
+                    val = w_rgb[0]
+                elif channel == "Grün":
+                    val = w_rgb[1]
+                elif channel == "Blau":
+                    val = w_rgb[2]
+                else:
+                    val = max(w_rgb)
+                row_vals.append(val)
+            channel_wear.append(row_vals)
+
+        max_w = max(max(row) for row in channel_wear) if channel_wear else 0
         
-        # Thermische Farbpalette (Schwarz -> Blau -> Magenta -> Rot -> Orange -> Gelb -> Weiß)
         def get_heat_color(val):
             if max_w == 0:
                 return "#000000"
-            # Skaliere auf 0.0 - 1.0
             nv = val / max_w if max_w > 0 else 0
-            # RGB-Mischung
-            if nv < 0.2: # Dunkelblau
-                r = 0
-                g = 0
-                b = int((nv / 0.2) * 255)
-            elif nv < 0.4: # Violett
-                r = int(((nv - 0.2) / 0.2) * 150)
-                g = 0
-                b = 255
-            elif nv < 0.6: # Magenta/Rot
-                r = 255
-                g = 0
-                b = int((1.0 - (nv - 0.4) / 0.2) * 255)
-            elif nv < 0.8: # Orange
-                r = 255
-                g = int(((nv - 0.6) / 0.2) * 160)
-                b = 0
-            else: # Gelb/Weiß
-                r = 255
-                g = 255
-                b = int(((nv - 0.8) / 0.2) * 255)
-                
-            return f"#{r:02x}{g:02x}{b:02x}"
+            
+            if channel == "Rot":
+                r = int(nv * 255)
+                return f"#{r:02x}0000"
+            elif channel == "Grün":
+                g = int(nv * 255)
+                return f"#00{g:02x}00"
+            elif channel == "Blau":
+                b = int(nv * 255)
+                return f"#0000{b:02x}"
+            else:
+                if nv < 0.2:
+                    r, g, b = 0, 0, int((nv / 0.2) * 255)
+                elif nv < 0.4:
+                    r, g, b = int(((nv - 0.2) / 0.2) * 150), 0, 255
+                elif nv < 0.6:
+                    r, g, b = 255, 0, int((1.0 - (nv - 0.4) / 0.2) * 255)
+                elif nv < 0.8:
+                    r, g, b = 255, int(((nv - 0.6) / 0.2) * 160), 0
+                else:
+                    r, g, b = 255, 255, int(((nv - 0.8) / 0.2) * 255)
+                return f"#{r:02x}{g:02x}{b:02x}"
 
         for y in range(rows):
             for x in range(cols):
-                w_val = wear[y][x]
+                w_val = channel_wear[y][x]
                 color = get_heat_color(w_val)
                 x1 = x * block_w
                 y1 = y * block_h
@@ -986,9 +1303,15 @@ Categories=Utility;
 
         # Homogenität & Maximalabnutzung berechnen
         with self.model.lock:
-            wear = [row[:] for row in self.model.wear_map]
+            wear = [[[val for val in cell] for cell in row] for row in self.model.wear_map]
             
-        max_wear = max(max(row) for row in wear) if wear else 0
+        max_wear = 0.0
+        if wear:
+            for row in wear:
+                for cell in row:
+                    for val in cell:
+                        if val > max_wear:
+                            max_wear = val
         homogeneity = 100.0 - (max_wear * 100.0)
         
         self.lbl_max_wear.config(text=f"{max_wear * 100.0:.3f}%")
