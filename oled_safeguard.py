@@ -109,6 +109,20 @@ class OLEDModel:
             self.wear_map = [[0.0 for _ in range(cols)] for _ in range(rows)]
         self.save_wear_map()
 
+    def check_night_schedule(self, current_hour):
+        if self.config.get("night_schedule_enabled", False):
+            is_night_time = (current_hour >= 20 or current_hour < 6)
+            current_mode = self.config.get("operating_mode", "Schutz")
+            if is_night_time and current_mode != "Nacht":
+                self.config["operating_mode"] = "Nacht"
+                self.save_config()
+                return True
+            elif not is_night_time and current_mode == "Nacht":
+                self.config["operating_mode"] = "Schutz"
+                self.save_config()
+                return True
+        return False
+
 
 class OLEDDaemon:
     """Hintergrund-Daemon für Bildschirm-Sampling und Kompensations-Berechnungen."""
@@ -144,17 +158,7 @@ class OLEDDaemon:
             t_start = time.time()
             
             # Automatische Zeitsteuerung prüfen
-            if self.model.config.get("night_schedule_enabled", False):
-                hour = datetime.datetime.now().hour
-                is_night_time = (hour >= 20 or hour < 6)
-                current_mode = self.model.config.get("operating_mode", "Schutz")
-                if is_night_time and current_mode != "Nacht":
-                    self.model.config["operating_mode"] = "Nacht"
-                    self.model.save_config()
-                elif not is_night_time and current_mode == "Nacht":
-                    self.model.config["operating_mode"] = "Schutz"
-                    self.model.save_config()
-                    
+            self.model.check_night_schedule(datetime.datetime.now().hour)
             self._sample_screen()
             
             # Aktualisiere das Overlay, falls aktiv
@@ -666,7 +670,7 @@ class ControlGUI:
 
         # Checkbox: Aktivieren
         self.val_idle_enabled = tk.BooleanVar(value=self.model.config.get("idle_dimming_enabled", True))
-        self.chk_idle = ttk.Checkbutton(right_col, text="Dimmer aktivieren", variable=self.val_idle_enabled, style="TCheckbutton")
+        self.chk_idle = ttk.Checkbutton(right_col, text="Dimmer aktivieren", variable=self.val_idle_enabled, style="TCheckbutton", command=self.on_toggle_idle_dimming)
         self.chk_idle.pack(anchor="w", pady=(5, 15))
 
         # Slider 4: Inaktivitäts-Timeout
@@ -688,7 +692,7 @@ class ControlGUI:
         # Zeitsteuerung (Nacht-Filter)
         ttk.Label(right_col, text="Automatischer Zeitplan", font=("Outfit", 12, "bold"), background=self.bg_card, foreground=self.accent_cyan).pack(anchor="w", pady=(10, 10))
         self.val_night_schedule = tk.BooleanVar(value=self.model.config.get("night_schedule_enabled", False))
-        self.chk_night_schedule = ttk.Checkbutton(right_col, text="Nacht-Filter abends automatisch aktivieren\n(von 20:00 Uhr bis 06:00 Uhr)", variable=self.val_night_schedule, style="TCheckbutton")
+        self.chk_night_schedule = ttk.Checkbutton(right_col, text="Nacht-Filter abends automatisch aktivieren\n(von 20:00 Uhr bis 06:00 Uhr)", variable=self.val_night_schedule, style="TCheckbutton", command=self.on_toggle_night_schedule)
         self.chk_night_schedule.pack(anchor="w", pady=(5, 10))
 
         # Speichern Button (unten zentriert)
@@ -743,6 +747,16 @@ class ControlGUI:
                 btn.config(style="Accent.TButton")
             else:
                 btn.config(style="TButton")
+
+    def on_toggle_idle_dimming(self):
+        is_enabled = self.val_idle_enabled.get()
+        self.model.config["idle_dimming_enabled"] = is_enabled
+        self.model.save_config()
+
+    def on_toggle_night_schedule(self):
+        is_enabled = self.val_night_schedule.get()
+        self.model.config["night_schedule_enabled"] = is_enabled
+        self.model.save_config()
 
     def save_settings(self):
         self.model.config["tracking_interval_seconds"] = self.val_interval.get()
