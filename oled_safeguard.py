@@ -13,6 +13,7 @@ import time
 import socket
 import threading
 import io
+import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -39,7 +40,8 @@ DEFAULT_CONFIG = {
     "idle_timeout_seconds": 60,
     "idle_dim_percent": 60,
     "operating_mode": "Schutz",
-    "night_dim_percent": 30
+    "night_dim_percent": 30,
+    "night_schedule_enabled": False
 }
 
 # Single-Instance Port
@@ -140,6 +142,19 @@ class OLEDDaemon:
         print("OLED Safe-Guard Daemon erfolgreich gestartet.")
         while self.model.running:
             t_start = time.time()
+            
+            # Automatische Zeitsteuerung prüfen
+            if self.model.config.get("night_schedule_enabled", False):
+                hour = datetime.datetime.now().hour
+                is_night_time = (hour >= 20 or hour < 6)
+                current_mode = self.model.config.get("operating_mode", "Schutz")
+                if is_night_time and current_mode != "Nacht":
+                    self.model.config["operating_mode"] = "Nacht"
+                    self.model.save_config()
+                elif not is_night_time and current_mode == "Nacht":
+                    self.model.config["operating_mode"] = "Schutz"
+                    self.model.save_config()
+                    
             self._sample_screen()
             
             # Aktualisiere das Overlay, falls aktiv
@@ -670,6 +685,12 @@ class ControlGUI:
         self.slider_idle_dim = ttk.Scale(right_col, from_=10, to=90, variable=self.val_idle_dim, orient="horizontal", command=lambda e: self.lbl_idle_dim_num.config(text=f"{self.val_idle_dim.get()}%"))
         self.slider_idle_dim.pack(fill="x", pady=(0, 15))
 
+        # Zeitsteuerung (Nacht-Filter)
+        ttk.Label(right_col, text="Automatischer Zeitplan", font=("Outfit", 12, "bold"), background=self.bg_card, foreground=self.accent_cyan).pack(anchor="w", pady=(10, 10))
+        self.val_night_schedule = tk.BooleanVar(value=self.model.config.get("night_schedule_enabled", False))
+        self.chk_night_schedule = ttk.Checkbutton(right_col, text="Nacht-Filter abends automatisch aktivieren\n(von 20:00 Uhr bis 06:00 Uhr)", variable=self.val_night_schedule, style="TCheckbutton")
+        self.chk_night_schedule.pack(anchor="w", pady=(5, 10))
+
         # Speichern Button (unten zentriert)
         self.btn_save = ttk.Button(card, text="Einstellungen Speichern", command=self.save_settings, style="Accent.TButton")
         self.btn_save.grid(row=2, column=0, columnspan=2, padx=20, pady=20, sticky="w")
@@ -730,6 +751,7 @@ class ControlGUI:
         self.model.config["idle_dimming_enabled"] = self.val_idle_enabled.get()
         self.model.config["idle_timeout_seconds"] = self.val_idle_timeout.get()
         self.model.config["idle_dim_percent"] = self.val_idle_dim.get()
+        self.model.config["night_schedule_enabled"] = self.val_night_schedule.get()
         self.model.save_config()
         messagebox.showinfo("Erfolg", "Einstellungen wurden erfolgreich gespeichert!")
 
