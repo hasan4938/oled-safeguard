@@ -535,6 +535,12 @@ class ControlGUI:
         
         ttk.Label(card3, text="Systemsteuerung", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
         
+        # Screen Info Banner
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        screen_info = f"🖥   Gesamtauflösung: {screen_w}x{screen_h} px  |  📊 Messraster: {self.model.config['grid_cols']}x{self.model.config['grid_rows']} Zonen"
+        ttk.Label(card3, text=screen_info, style="CardText.TLabel", foreground=self.accent_cyan, font=("Inter", 9, "bold")).pack(anchor="w", padx=20, pady=(0, 10))
+        
         # Info Text
         desc_text = (
             "Dieser Hintergrundprozess gleicht physikalische Pixelabnutzungen (Einbrenneffekte) aus.\n"
@@ -589,7 +595,11 @@ class ControlGUI:
         
         # Heatmap Canvas
         self.map_canvas = tk.Canvas(card, bg="#080808", highlightthickness=1, highlightbackground="#333333")
-        self.map_canvas.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.map_canvas.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        # Export Button
+        self.btn_export = ttk.Button(card, text="Hitze-Karte exportieren (.png)", command=self.export_heatmap_image)
+        self.btn_export.pack(anchor="w", padx=20, pady=(0, 15))
 
     def build_settings(self, parent):
         parent.rowconfigure(0, weight=1)
@@ -737,6 +747,63 @@ class ControlGUI:
             self.model.reset_wear_map()
             self.overlay_manager.hide_overlay()
             messagebox.showinfo("Erfolg", "Die Abnutzungskarte wurde zurückgesetzt.")
+
+    def export_heatmap_image(self):
+        from tkinter import filedialog
+        
+        cols = self.model.config["grid_cols"]
+        rows = self.model.config["grid_rows"]
+        
+        img_w = 1280
+        img_h = 720
+        block_w = img_w / cols
+        block_h = img_h / rows
+        
+        img = Image.new("RGB", (img_w, img_h), "#080808")
+        draw = ImageDraw.Draw(img)
+        
+        with self.model.lock:
+            wear = [row[:] for row in self.model.wear_map]
+            
+        max_w = max(max(row) for row in wear) if wear else 0
+        
+        def get_heat_color_rgb(val):
+            if max_w == 0:
+                return (0, 0, 0)
+            nv = val / max_w if max_w > 0 else 0
+            if nv < 0.2:
+                return (0, 0, int((nv / 0.2) * 255))
+            elif nv < 0.4:
+                return (int(((nv - 0.2) / 0.2) * 150), 0, 255)
+            elif nv < 0.6:
+                return (255, 0, int((1.0 - (nv - 0.4) / 0.2) * 255))
+            elif nv < 0.8:
+                return (255, int(((nv - 0.6) / 0.2) * 160), 0)
+            else:
+                return (255, 255, int(((nv - 0.8) / 0.2) * 255))
+
+        for y in range(rows):
+            for x in range(cols):
+                w_val = wear[y][x]
+                color = get_heat_color_rgb(w_val)
+                x1 = x * block_w
+                y1 = y * block_h
+                x2 = x1 + block_w
+                y2 = y1 + block_h
+                draw.rectangle([x1, y1, x2, y2], fill=color, outline=(24, 24, 24))
+                
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png")],
+            initialfile="oled_safeguard_heatmap.png",
+            title="Hitze-Karte speichern"
+        )
+        if filepath:
+            try:
+                img.save(filepath)
+                messagebox.showinfo("Export erfolgreich", f"Die Hitze-Karte wurde unter {filepath} gespeichert.")
+            except Exception as e:
+                messagebox.showerror("Fehler beim Export", f"Die Hitze-Karte konnte nicht gespeichert werden: {e}")
 
     def show_calibration_slide(self):
         # Öffnet ein vollflächiges weißes Fenster zum Suchen von echtem Burn-in
