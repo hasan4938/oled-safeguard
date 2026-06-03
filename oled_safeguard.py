@@ -307,11 +307,23 @@ class OverlayManager:
                     self.display = display.Display()
                 window_id = int(win.wm_frame(), 16)
                 xwin = self.display.create_resource_object('window', window_id)
+                # clear input shape
                 shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
                 self.display.flush()
             except Exception:
                 pass
         win.bind("<Configure>", reapply)
+
+    def _is_compositor_active(self):
+        try:
+            if not self.display:
+                self.display = display.Display()
+            screen = self.display.get_default_screen()
+            atom = self.display.intern_atom(f"_NET_WM_CM_S{screen}")
+            owner = self.display.get_selection_owner(atom)
+            return owner != 0
+        except Exception:
+            return False
 
     def update_overlay(self):
         if not self.model.config["compensation_enabled"]:
@@ -320,6 +332,12 @@ class OverlayManager:
         if self.is_idle:
             return
         if self.model.config.get("operating_mode", "Schutz") == "Gaming":
+            self.hide_overlay()
+            return
+            
+        # Sicherheitsprüfung: Ist ein Compositor aktiv?
+        if not self._is_compositor_active():
+            print("Warnung: Kein Compositor aktiv. Verberge Overlay zur Sicherheit.")
             self.hide_overlay()
             return
 
@@ -350,12 +368,17 @@ class OverlayManager:
                 night_dim = self.model.config.get("night_dim_percent", 30) / 100.0
                 self.overlay_win.attributes("-alpha", night_dim)
                 
-                self.overlay_win.update()
-                window_id = int(self.overlay_win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-                self.display.flush()
+                try:
+                    self.overlay_win.update()
+                    window_id = int(self.overlay_win.wm_frame(), 16)
+                    xwin = self.display.create_resource_object('window', window_id)
+                    # Bounding first, then Input shape to prevent shape resets!
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                    self.display.flush()
+                except Exception as shape_err:
+                    print(f"Fehler beim Zeichnen des Nacht-Overlays: {shape_err}")
+                    self.hide_overlay()
                 return
             
             # Berechne Dämpfungswerte für jeden Block
@@ -423,19 +446,25 @@ class OverlayManager:
                         rects.append((rx, ry, block_w, block_h))
 
             # Bounding Shape setzen
-            self.overlay_win.update()
-            window_id = int(self.overlay_win.wm_frame(), 16)
-            xwin = self.display.create_resource_object('window', window_id)
-            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-            if rects:
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, rects)
-            else:
-                # Wenn keine Rechtecke vorhanden sind, verstecke das Fenster komplett
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [])
-            self.display.flush()
+            try:
+                self.overlay_win.update()
+                window_id = int(self.overlay_win.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                # Bounding first, then Input shape to prevent shape resets!
+                if rects:
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, rects)
+                else:
+                    # Wenn keine Rechtecke vorhanden sind, verstecke das Fenster komplett
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [])
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                self.display.flush()
+            except Exception as shape_err:
+                print(f"Fehler beim Zeichnen des Schutz-Overlays: {shape_err}")
+                self.hide_overlay()
 
         except Exception as e:
             print(f"Fehler im OverlayManager beim Zeichnen: {e}")
+            self.hide_overlay()
 
     def hide_overlay(self):
         if self.healing_saver:
@@ -496,6 +525,11 @@ class OverlayManager:
 
     def _apply_idle_dimming(self):
         try:
+            # Sicherheitsprüfung: Ist ein Compositor aktiv?
+            if not self._is_compositor_active():
+                self.hide_overlay()
+                return
+
             width = self.display.screen().width_in_pixels
             height = self.display.screen().height_in_pixels
             
@@ -512,15 +546,21 @@ class OverlayManager:
             self.overlay_win.attributes("-alpha", idle_dim)
 
             # Setze Bounding Shape auf den vollen Bildschirm (gesamtes Fenster dimmen)
-            self.overlay_win.update()
-            window_id = int(self.overlay_win.wm_frame(), 16)
-            xwin = self.display.create_resource_object('window', window_id)
-            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-            shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-            self.display.flush()
+            try:
+                self.overlay_win.update()
+                window_id = int(self.overlay_win.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                # Bounding first, then Input shape to prevent shape resets!
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                self.display.flush()
+            except Exception as shape_err:
+                print(f"Fehler beim Setzen des Idle-Shapes: {shape_err}")
+                self.hide_overlay()
             
         except Exception as e:
             print(f"Fehler beim Anwenden des Inaktivitäts-Dimmers: {e}")
+            self.hide_overlay()
 
 
 class ActiveHealingSaver:
@@ -559,12 +599,17 @@ class ActiveHealingSaver:
         self.window.bind("<Configure>", reapply)
 
         # Input/Bounding Shape für Click-Through
-        self.window.update()
-        window_id = int(self.window.wm_frame(), 16)
-        xwin = self.display.create_resource_object('window', window_id)
-        shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-        shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-        self.display.flush()
+        try:
+            self.window.update()
+            window_id = int(self.window.wm_frame(), 16)
+            xwin = self.display.create_resource_object('window', window_id)
+            # Bounding first, then Input shape to prevent shape resets!
+            shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
+            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            self.display.flush()
+        except Exception as shape_err:
+            print(f"Fehler beim Setzen des Click-Through für HealingSaver: {shape_err}")
+            self.hide()
         
         self.canvas = tk.Canvas(self.window, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
