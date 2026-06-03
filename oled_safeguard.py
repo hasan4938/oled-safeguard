@@ -299,19 +299,89 @@ class OverlayManager:
         
         # Starte die regelmäßige Inaktivitätsprüfung
         self.root.after(1000, self._poll_idle)
+        # Starte die regelmäßige Click-Through-Überwachung
+        self.root.after(200, self._ensure_click_through_loop)
+
+    def _get_toplevel_xwindow(self, win):
+        try:
+            if not self.display:
+                self.display = display.Display()
+            win_id = int(win.wm_frame(), 16)
+            xwin = self.display.create_resource_object('window', win_id)
+            tree = xwin.query_tree()
+            parent = tree.parent
+            root = tree.root
+            while parent and parent.id != root.id:
+                xwin = parent
+                tree = xwin.query_tree()
+                parent = tree.parent
+                root = tree.root
+            return xwin
+        except Exception:
+            try:
+                return self.display.create_resource_object('window', int(win.wm_frame(), 16))
+            except Exception:
+                return None
+
+    def _apply_click_through(self, win):
+        try:
+            if not self.display:
+                self.display = display.Display()
+            
+            # 1. Apply to the client window itself
+            client_id = win.winfo_id()
+            client_xwin = self.display.create_resource_object('window', client_id)
+            shape.rectangles(client_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            
+            # 2. Walk up and apply to all parents in the hierarchy up to the child of root
+            curr_xwin = client_xwin
+            try:
+                tree = curr_xwin.query_tree()
+                parent = tree.parent
+                root = tree.root
+                depth = 0
+                while parent and parent.id != root.id and depth < 20:
+                    shape.rectangles(parent, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                    curr_xwin = parent
+                    tree = curr_xwin.query_tree()
+                    parent = tree.parent
+                    root = tree.root
+                    depth += 1
+                
+                # Also apply to the top-level parent wrapper (root's child)
+                if curr_xwin and curr_xwin.id != root.id:
+                    shape.rectangles(curr_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            except Exception:
+                pass
+                
+            # 3. Apply to whatever wm_frame() returns if it's different
+            try:
+                frame_hex = win.wm_frame()
+                if frame_hex:
+                    frame_id = int(frame_hex, 16)
+                    if frame_id != client_id:
+                        frame_xwin = self.display.create_resource_object('window', frame_id)
+                        shape.rectangles(frame_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            except Exception:
+                pass
+                
+            self.display.flush()
+        except Exception:
+            pass
+
+    def _ensure_click_through_loop(self):
+        try:
+            if self.overlay_win and self.overlay_win.winfo_exists():
+                self._apply_click_through(self.overlay_win)
+            if self.healing_saver and self.healing_saver.window and self.healing_saver.window.winfo_exists():
+                self._apply_click_through(self.healing_saver.window)
+        except Exception:
+            pass
+        self.root.after(500, self._ensure_click_through_loop)
 
     def _setup_click_through(self, win):
         def reapply(event=None):
-            try:
-                if not self.display:
-                    self.display = display.Display()
-                window_id = int(win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                # clear input shape
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
-            except Exception:
-                pass
+            self._apply_click_through(win)
         win.bind("<Configure>", reapply)
 
     def _is_compositor_active(self):
@@ -370,12 +440,7 @@ class OverlayManager:
                 
                 try:
                     self.overlay_win.update()
-                    window_id = int(self.overlay_win.wm_frame(), 16)
-                    xwin = self.display.create_resource_object('window', window_id)
-                    # Bounding first, then Input shape to prevent shape resets!
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                    self.display.flush()
+                    self._apply_click_through(self.overlay_win)
                 except Exception as shape_err:
                     print(f"Fehler beim Zeichnen des Nacht-Overlays: {shape_err}")
                     self.hide_overlay()
@@ -448,16 +513,16 @@ class OverlayManager:
             # Bounding Shape setzen
             try:
                 self.overlay_win.update()
-                window_id = int(self.overlay_win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                # Bounding first, then Input shape to prevent shape resets!
-                if rects:
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, rects)
-                else:
-                    # Wenn keine Rechtecke vorhanden sind, verstecke das Fenster komplett
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [])
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
+                xwin = self._get_toplevel_xwindow(self.overlay_win)
+                if xwin:
+                    # Bounding first, then Input shape to prevent shape resets!
+                    if rects:
+                        shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, rects)
+                    else:
+                        # Wenn keine Rechtecke vorhanden sind, verstecke das Fenster komplett
+                        shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [])
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                    self.display.flush()
             except Exception as shape_err:
                 print(f"Fehler beim Zeichnen des Schutz-Overlays: {shape_err}")
                 self.hide_overlay()
@@ -499,7 +564,7 @@ class OverlayManager:
                     if idle_mode == "Heilung":
                         self.hide_overlay()
                         if not self.healing_saver:
-                            self.healing_saver = ActiveHealingSaver(self.root, self.model, self.display)
+                            self.healing_saver = ActiveHealingSaver(self.root, self.model, self.display, self)
                         self.healing_saver.show()
                     else:
                         if self.healing_saver:
@@ -545,15 +610,9 @@ class OverlayManager:
             idle_dim = self.model.config.get("idle_dim_percent", 60) / 100.0
             self.overlay_win.attributes("-alpha", idle_dim)
 
-            # Setze Bounding Shape auf den vollen Bildschirm (gesamtes Fenster dimmen)
             try:
                 self.overlay_win.update()
-                window_id = int(self.overlay_win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                # Bounding first, then Input shape to prevent shape resets!
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
+                self._apply_click_through(self.overlay_win)
             except Exception as shape_err:
                 print(f"Fehler beim Setzen des Idle-Shapes: {shape_err}")
                 self.hide_overlay()
@@ -565,10 +624,11 @@ class OverlayManager:
 
 class ActiveHealingSaver:
     """Visueller, animierter Bildschirmschoner zur aktiven Ausgleichs-Alterung (Panel Healing)."""
-    def __init__(self, root, model, display_obj):
+    def __init__(self, root, model, display_obj, overlay_manager):
         self.root = root
         self.model = model
         self.display = display_obj
+        self.overlay_manager = overlay_manager
         self.window = None
         self.canvas = None
         self.running = False
@@ -589,24 +649,15 @@ class ActiveHealingSaver:
         
         # Enforce click-through on configure
         def reapply(event=None):
-            try:
-                window_id = int(self.window.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
-            except Exception:
-                pass
+            if self.overlay_manager:
+                self.overlay_manager._apply_click_through(self.window)
         self.window.bind("<Configure>", reapply)
 
-        # Input/Bounding Shape für Click-Through
+        # Input Shape für Click-Through
         try:
             self.window.update()
-            window_id = int(self.window.wm_frame(), 16)
-            xwin = self.display.create_resource_object('window', window_id)
-            # Bounding first, then Input shape to prevent shape resets!
-            shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
-            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-            self.display.flush()
+            if self.overlay_manager:
+                self.overlay_manager._apply_click_through(self.window)
         except Exception as shape_err:
             print(f"Fehler beim Setzen des Click-Through für HealingSaver: {shape_err}")
             self.hide()
