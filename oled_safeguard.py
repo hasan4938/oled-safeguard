@@ -324,13 +324,13 @@ class OverlayManager:
                 return None
 
     def _apply_click_through(self, win):
+        d = None
         try:
-            if not self.display:
-                self.display = display.Display()
+            d = display.Display()
             
             # 1. Apply to the client window itself
             client_id = win.winfo_id()
-            client_xwin = self.display.create_resource_object('window', client_id)
+            client_xwin = d.create_resource_object('window', client_id)
             shape.rectangles(client_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             
             # 2. Walk up and apply to all parents in the hierarchy up to the child of root
@@ -360,14 +360,26 @@ class OverlayManager:
                 if frame_hex:
                     frame_id = int(frame_hex, 16)
                     if frame_id != client_id:
-                        frame_xwin = self.display.create_resource_object('window', frame_id)
+                        frame_xwin = d.create_resource_object('window', frame_id)
                         shape.rectangles(frame_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             except Exception:
                 pass
                 
-            self.display.flush()
-        except Exception:
-            pass
+            d.flush()
+        except Exception as e:
+            try:
+                with open("/home/hsunman/Documents/antigravity/hopeful-volta/click_through_error.log", "a") as f:
+                    import traceback
+                    f.write(f"[{time.asctime()}] Error in _apply_click_through: {e}\n")
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
+        finally:
+            if d:
+                try:
+                    d.close()
+                except Exception:
+                    pass
 
     def _ensure_click_through_loop(self):
         try:
@@ -521,8 +533,7 @@ class OverlayManager:
                     else:
                         # Wenn keine Rechtecke vorhanden sind, verstecke das Fenster komplett
                         shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [])
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                    self.display.flush()
+                    self._apply_click_through(self.overlay_win)
             except Exception as shape_err:
                 print(f"Fehler beim Zeichnen des Schutz-Overlays: {shape_err}")
                 self.hide_overlay()
