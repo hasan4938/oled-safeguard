@@ -300,6 +300,19 @@ class OverlayManager:
         # Starte die regelmäßige Inaktivitätsprüfung
         self.root.after(1000, self._poll_idle)
 
+    def _setup_click_through(self, win):
+        def reapply(event=None):
+            try:
+                if not self.display:
+                    self.display = display.Display()
+                window_id = int(win.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                self.display.flush()
+            except Exception:
+                pass
+        win.bind("<Configure>", reapply)
+
     def update_overlay(self):
         if not self.model.config["compensation_enabled"]:
             self.hide_overlay()
@@ -331,17 +344,18 @@ class OverlayManager:
                     self.overlay_win.overrideredirect(True)
                     self.overlay_win.geometry(f"{width}x{height}+0+0")
                     self.overlay_win.attributes("-topmost", True)
+                    self._setup_click_through(self.overlay_win)
 
                 self.overlay_win.config(bg="#221000") # Edler warmer Bernstein-Filter (Blaulichtfilter)
+                night_dim = self.model.config.get("night_dim_percent", 30) / 100.0
+                self.overlay_win.attributes("-alpha", night_dim)
+                
                 self.overlay_win.update()
                 window_id = int(self.overlay_win.wm_frame(), 16)
                 xwin = self.display.create_resource_object('window', window_id)
                 shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
                 shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
                 self.display.flush()
-
-                night_dim = self.model.config.get("night_dim_percent", 30) / 100.0
-                self.overlay_win.attributes("-alpha", night_dim)
                 return
             
             # Berechne Dämpfungswerte für jeden Block
@@ -383,6 +397,7 @@ class OverlayManager:
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.attributes("-topmost", True)
+                self._setup_click_through(self.overlay_win)
                 
             self.overlay_win.config(bg="black")
             self.display.flush()
@@ -490,6 +505,11 @@ class OverlayManager:
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.attributes("-topmost", True)
                 self.overlay_win.config(bg="black")
+                self._setup_click_through(self.overlay_win)
+
+            # Helligkeit dämpfen
+            idle_dim = self.model.config.get("idle_dim_percent", 60) / 100.0
+            self.overlay_win.attributes("-alpha", idle_dim)
 
             # Setze Bounding Shape auf den vollen Bildschirm (gesamtes Fenster dimmen)
             self.overlay_win.update()
@@ -498,10 +518,6 @@ class OverlayManager:
             shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
             self.display.flush()
-
-            # Helligkeit dämpfen
-            idle_dim = self.model.config.get("idle_dim_percent", 60) / 100.0
-            self.overlay_win.attributes("-alpha", idle_dim)
             
         except Exception as e:
             print(f"Fehler beim Anwenden des Inaktivitäts-Dimmers: {e}")
@@ -531,6 +547,17 @@ class ActiveHealingSaver:
         self.window.attributes("-topmost", True)
         self.window.config(bg="black")
         
+        # Enforce click-through on configure
+        def reapply(event=None):
+            try:
+                window_id = int(self.window.wm_frame(), 16)
+                xwin = self.display.create_resource_object('window', window_id)
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+                self.display.flush()
+            except Exception:
+                pass
+        self.window.bind("<Configure>", reapply)
+
         # Input/Bounding Shape für Click-Through
         self.window.update()
         window_id = int(self.window.wm_frame(), 16)
