@@ -331,6 +331,15 @@ class OverlayManager:
             # 1. Apply to the client window itself
             client_id = win.winfo_id()
             client_xwin = d.create_resource_object('window', client_id)
+            
+            # Ensure compositor does not suspend for this window (preventing solid black/brown screen)
+            try:
+                bypass_atom = d.intern_atom('_NET_WM_BYPASS_COMPOSITOR')
+                cardinal_atom = d.intern_atom('CARDINAL')
+                client_xwin.change_property(bypass_atom, cardinal_atom, 32, [2])
+            except Exception:
+                pass
+
             shape.rectangles(client_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             
             # 2. Walk up and apply to all parents in the hierarchy up to the child of root
@@ -341,6 +350,10 @@ class OverlayManager:
                 root = tree.root
                 depth = 0
                 while parent and parent.id != root.id and depth < 20:
+                    try:
+                        parent.change_property(bypass_atom, cardinal_atom, 32, [2])
+                    except Exception:
+                        pass
                     shape.rectangles(parent, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
                     curr_xwin = parent
                     tree = curr_xwin.query_tree()
@@ -350,6 +363,10 @@ class OverlayManager:
                 
                 # Also apply to the top-level parent wrapper (root's child)
                 if curr_xwin and curr_xwin.id != root.id:
+                    try:
+                        curr_xwin.change_property(bypass_atom, cardinal_atom, 32, [2])
+                    except Exception:
+                        pass
                     shape.rectangles(curr_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             except Exception:
                 pass
@@ -361,6 +378,10 @@ class OverlayManager:
                     frame_id = int(frame_hex, 16)
                     if frame_id != client_id:
                         frame_xwin = d.create_resource_object('window', frame_id)
+                        try:
+                            frame_xwin.change_property(bypass_atom, cardinal_atom, 32, [2])
+                        except Exception:
+                            pass
                         shape.rectangles(frame_xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             except Exception:
                 pass
@@ -441,11 +462,17 @@ class OverlayManager:
             if mode == "Nacht":
                 if not self.overlay_win:
                     self.overlay_win = tk.Toplevel(self.root, takefocus=False)
+                    self.overlay_win.withdraw() # Start hidden
                     self.overlay_win.overrideredirect(True)
                     self.overlay_win.geometry(f"{width}x{height}+0+0")
                     self.overlay_win.wm_attributes("-type", "notification")
                     self.overlay_win.attributes("-topmost", True)
+                    self.overlay_win.config(bg="#221000") # Edler warmer Bernstein-Filter
+                    
+                    self.overlay_win.update_idletasks()
+                    self._apply_click_through(self.overlay_win)
                     self._setup_click_through(self.overlay_win)
+                    self.overlay_win.deiconify()
 
                 self.overlay_win.config(bg="#221000") # Edler warmer Bernstein-Filter (Blaulichtfilter)
                 night_dim = self.model.config.get("night_dim_percent", 30) / 100.0
@@ -495,14 +522,21 @@ class OverlayManager:
             # Erstelle das Overlay-Fenster falls erforderlich
             if not self.overlay_win:
                 self.overlay_win = tk.Toplevel(self.root, takefocus=False)
+                self.overlay_win.withdraw() # Start hidden
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.wm_attributes("-type", "notification")
                 self.overlay_win.attributes("-topmost", True)
+                self.overlay_win.config(bg="black")
+                
+                self.overlay_win.update_idletasks()
+                self._apply_click_through(self.overlay_win)
                 self._setup_click_through(self.overlay_win)
+                self.overlay_win.deiconify()
                 
             self.overlay_win.config(bg="black")
-            self.display.flush()
+            if self.display:
+                self.display.flush()
 
             # Setze die Gesamt-Fenster-Opacity auf das Maximum der benötigten Dämpfung
             self.overlay_win.attributes("-alpha", max_dim)
@@ -613,12 +647,17 @@ class OverlayManager:
             
             if not self.overlay_win:
                 self.overlay_win = tk.Toplevel(self.root, takefocus=False)
+                self.overlay_win.withdraw() # Start hidden
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.wm_attributes("-type", "notification")
                 self.overlay_win.attributes("-topmost", True)
                 self.overlay_win.config(bg="black")
+                
+                self.overlay_win.update_idletasks()
+                self._apply_click_through(self.overlay_win)
                 self._setup_click_through(self.overlay_win)
+                self.overlay_win.deiconify()
 
             # Helligkeit dämpfen
             idle_dim = self.model.config.get("idle_dim_percent", 60) / 100.0
@@ -656,6 +695,7 @@ class ActiveHealingSaver:
         height = self.display.screen().height_in_pixels
         
         self.window = tk.Toplevel(self.root, takefocus=False)
+        self.window.withdraw() # Start hidden
         self.window.overrideredirect(True)
         self.window.geometry(f"{width}x{height}+0+0")
         self.window.wm_attributes("-type", "notification")
@@ -670,9 +710,11 @@ class ActiveHealingSaver:
 
         # Input Shape für Click-Through
         try:
-            self.window.update()
+            self.window.update_idletasks()
             if self.overlay_manager:
                 self.overlay_manager._apply_click_through(self.window)
+            self.window.deiconify()
+            self.window.update()
         except Exception as shape_err:
             print(f"Fehler beim Setzen des Click-Through für HealingSaver: {shape_err}")
             self.hide()
