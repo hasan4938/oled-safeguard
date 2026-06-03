@@ -342,6 +342,7 @@ class OverlayManager:
                 self.overlay_win.update()
                 window_id = int(self.overlay_win.wm_frame(), 16)
                 xwin = self.display.create_resource_object('window', window_id)
+                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
                 shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
                 self.display.flush()
 
@@ -423,6 +424,7 @@ class OverlayManager:
             self.overlay_win.update()
             window_id = int(self.overlay_win.wm_frame(), 16)
             xwin = self.display.create_resource_object('window', window_id)
+            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             if rects:
                 shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, rects)
             else:
@@ -512,6 +514,7 @@ class OverlayManager:
             self.overlay_win.update()
             window_id = int(self.overlay_win.wm_frame(), 16)
             xwin = self.display.create_resource_object('window', window_id)
+            shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
             shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
             self.display.flush()
 
