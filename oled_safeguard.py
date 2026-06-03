@@ -331,12 +331,6 @@ class OverlayManager:
                     self.overlay_win.overrideredirect(True)
                     self.overlay_win.geometry(f"{width}x{height}+0+0")
                     self.overlay_win.attributes("-topmost", True)
-                    
-                    self.overlay_win.update()
-                    window_id = int(self.overlay_win.wm_frame(), 16)
-                    xwin = self.display.create_resource_object('window', window_id)
-                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                    self.display.flush()
 
                 self.overlay_win.config(bg="#221000") # Edler warmer Bernstein-Filter (Blaulichtfilter)
                 self.overlay_win.update()
@@ -389,13 +383,6 @@ class OverlayManager:
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.attributes("-topmost", True)
-                
-                # Input-Shape leeren -> Fenster wird zu 100% Click-Through!
-                self.overlay_win.update()
-                window_id = int(self.overlay_win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
                 
             self.overlay_win.config(bg="black")
             self.display.flush()
@@ -503,12 +490,6 @@ class OverlayManager:
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
                 self.overlay_win.attributes("-topmost", True)
                 self.overlay_win.config(bg="black")
-                
-                self.overlay_win.update()
-                window_id = int(self.overlay_win.wm_frame(), 16)
-                xwin = self.display.create_resource_object('window', window_id)
-                shape.rectangles(xwin, shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-                self.display.flush()
 
             # Setze Bounding Shape auf den vollen Bildschirm (gesamtes Fenster dimmen)
             self.overlay_win.update()
