@@ -440,9 +440,10 @@ class OverlayManager:
             
             if mode == "Nacht":
                 if not self.overlay_win:
-                    self.overlay_win = tk.Toplevel(self.root)
+                    self.overlay_win = tk.Toplevel(self.root, takefocus=False)
                     self.overlay_win.overrideredirect(True)
                     self.overlay_win.geometry(f"{width}x{height}+0+0")
+                    self.overlay_win.wm_attributes("-type", "notification")
                     self.overlay_win.attributes("-topmost", True)
                     self._setup_click_through(self.overlay_win)
 
@@ -493,9 +494,10 @@ class OverlayManager:
 
             # Erstelle das Overlay-Fenster falls erforderlich
             if not self.overlay_win:
-                self.overlay_win = tk.Toplevel(self.root)
+                self.overlay_win = tk.Toplevel(self.root, takefocus=False)
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
+                self.overlay_win.wm_attributes("-type", "notification")
                 self.overlay_win.attributes("-topmost", True)
                 self._setup_click_through(self.overlay_win)
                 
@@ -610,9 +612,10 @@ class OverlayManager:
             height = self.display.screen().height_in_pixels
             
             if not self.overlay_win:
-                self.overlay_win = tk.Toplevel(self.root)
+                self.overlay_win = tk.Toplevel(self.root, takefocus=False)
                 self.overlay_win.overrideredirect(True)
                 self.overlay_win.geometry(f"{width}x{height}+0+0")
+                self.overlay_win.wm_attributes("-type", "notification")
                 self.overlay_win.attributes("-topmost", True)
                 self.overlay_win.config(bg="black")
                 self._setup_click_through(self.overlay_win)
@@ -652,9 +655,10 @@ class ActiveHealingSaver:
         width = self.display.screen().width_in_pixels
         height = self.display.screen().height_in_pixels
         
-        self.window = tk.Toplevel(self.root)
+        self.window = tk.Toplevel(self.root, takefocus=False)
         self.window.overrideredirect(True)
         self.window.geometry(f"{width}x{height}+0+0")
+        self.window.wm_attributes("-type", "notification")
         self.window.attributes("-topmost", True)
         self.window.config(bg="black")
         
