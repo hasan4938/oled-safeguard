@@ -116,7 +116,7 @@ The stress mapping and brightness equalizations are calculated as follows:
 * **Ultra-Low Memory Footprint (< 20 MB)**: Images are instantly downsampled to $32 \times 18$ grid blocks in RAM, and high-res data is garbage-collected immediately.
 
 ---
-
+ Sachen verbessert ich bin der Beste
 ### Installation & Usage
 
 #### Launching the Control Center
