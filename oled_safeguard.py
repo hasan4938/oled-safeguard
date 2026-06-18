@@ -311,11 +311,13 @@ class OverlayManager:
             tree = xwin.query_tree()
             parent = tree.parent
             root = tree.root
-            while parent and parent.id != root.id:
+            depth = 0
+            while parent and parent.id != root.id and depth < 20:
                 xwin = parent
                 tree = xwin.query_tree()
                 parent = tree.parent
                 root = tree.root
+                depth += 1
             return xwin
         except Exception:
             try:
@@ -480,6 +482,10 @@ class OverlayManager:
                 
                 try:
                     self.overlay_win.update()
+                    xwin = self._get_toplevel_xwindow(self.overlay_win)
+                    if xwin:
+                        # Reset Bounding shape to full screen
+                        shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
                     self._apply_click_through(self.overlay_win)
                 except Exception as shape_err:
                     print(f"Fehler beim Zeichnen des Nacht-Overlays: {shape_err}")
@@ -665,6 +671,10 @@ class OverlayManager:
 
             try:
                 self.overlay_win.update()
+                xwin = self._get_toplevel_xwindow(self.overlay_win)
+                if xwin:
+                    # Reset Bounding shape to full screen for full dimming
+                    shape.rectangles(xwin, shape.SO.Set, shape.SK.Bounding, 0, 0, 0, [(0, 0, width, height)])
                 self._apply_click_through(self.overlay_win)
             except Exception as shape_err:
                 print(f"Fehler beim Setzen des Idle-Shapes: {shape_err}")
