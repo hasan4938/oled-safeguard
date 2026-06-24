@@ -557,8 +557,12 @@ class OverlayManager:
             
             for y in range(rows):
                 for x in range(cols):
-                    # Räumliches Dithering-Rauschen zur Vermeidung von Color Banding
-                    noise = random.uniform(-dithering, dithering) if dithering > 0 else 0
+                    # Deterministisches Rauschen basierend auf Position zur Vermeidung von Flackern
+                    if dithering > 0:
+                        val = math.sin(x * 12.9898 + y * 78.233) * 43758.5453
+                        noise = -dithering + 2 * dithering * (val - math.floor(val))
+                    else:
+                        noise = 0
                     if max_dim > 0 and (dim_map[y][x] + noise) > 0.3 * max_dim:
                         rx = x * block_w
                         ry = y * block_h
