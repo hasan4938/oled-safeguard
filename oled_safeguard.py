@@ -299,8 +299,6 @@ class OverlayManager:
         
         # Starte die regelmäßige Inaktivitätsprüfung
         self.root.after(1000, self._poll_idle)
-        # Starte die regelmäßige Click-Through-Überwachung
-        self.root.after(200, self._ensure_click_through_loop)
 
     def _get_toplevel_xwindow(self, win):
         try:
@@ -404,16 +402,6 @@ class OverlayManager:
                 except Exception:
                     pass
 
-    def _ensure_click_through_loop(self):
-        try:
-            if self.overlay_win and self.overlay_win.winfo_exists():
-                self._apply_click_through(self.overlay_win)
-            if self.healing_saver and self.healing_saver.window and self.healing_saver.window.winfo_exists():
-                self._apply_click_through(self.healing_saver.window)
-        except Exception:
-            pass
-        self.root.after(500, self._ensure_click_through_loop)
-
     def _setup_click_through(self, win):
         def reapply(event=None):
             self._apply_click_through(win)
@@ -431,12 +419,17 @@ class OverlayManager:
             return False
 
     def update_overlay(self):
-        if not self.model.config["compensation_enabled"]:
+        mode = self.model.config.get("operating_mode", "Schutz")
+        
+        # If mode is Schutz, we only show it if compensation is enabled
+        if mode == "Schutz" and not self.model.config["compensation_enabled"]:
             self.hide_overlay()
             return
+            
         if self.is_idle:
             return
-        if self.model.config.get("operating_mode", "Schutz") == "Gaming":
+            
+        if mode == "Gaming":
             self.hide_overlay()
             return
             
