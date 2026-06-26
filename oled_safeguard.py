@@ -1495,7 +1495,7 @@ Categories=Utility;
         self.root.after(500, self.update_loop)
 
 
-def start_instance_server(root):
+def start_instance_server(root, daemon, model, overlay_manager, run_headless):
     """Startet einen lokalen Socket-Server, um Mehrfachinstanzen zu steuern."""
     def server_thread():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1506,13 +1506,21 @@ def start_instance_server(root):
         except Exception:
             return  # Port besetzt (bereits aktiv)
             
+        gui_created = [not run_headless]
+        
+        def show_gui():
+            if not gui_created[0]:
+                ControlGUI(root, model, daemon, overlay_manager)
+                gui_created[0] = True
+            root.deiconify()
+            root.lift()
+            
         while True:
             try:
                 conn, addr = s.accept()
                 data = conn.recv(1024).decode('utf-8')
                 if data == "show":
-                    root.after(0, root.deiconify)
-                    root.after(0, root.lift)
+                    root.after(0, show_gui)
                 conn.close()
             except Exception:
                 break
@@ -1556,7 +1564,7 @@ def main():
     daemon.start()
     
     # Local Socket für Einmaligkeitssteuerung starten
-    start_instance_server(root)
+    start_instance_server(root, daemon, model, overlay_manager, run_headless)
 
     if run_headless:
         # Im Headless-Modus verstecken wir das Hauptfenster komplett
