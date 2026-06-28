@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
     "compensation_enabled": True,
     "grid_cols": 32,
     "grid_rows": 18,
-    "idle_dimming_enabled": True,
+    "idle_dimming_enabled": False,
     "idle_timeout_seconds": 60,
     "idle_dim_percent": 60,
     "operating_mode": "Schutz",
